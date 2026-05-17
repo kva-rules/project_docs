@@ -738,3 +738,33 @@ The following backend and frontend bugs were found during end-to-end integration
 | TC-43 | Expired token | | | PASS / FAIL | |
 | TC-44 | USER accesses admin API | | | PASS / FAIL | |
 | TC-45 | Invalid priority value | | | PASS / FAIL | |
+
+---
+
+## Appendix: Kubernetes Mode Test Cases
+
+Run all TC-01 through TC-45 against the k8s cluster by substituting:
+- **Base URL:** `http://ticketing.local` instead of `http://localhost:8080`
+- **Credentials:** see table below
+
+### k8s Demo Credentials
+
+| # | Role | Email | Password |
+|---|---|---|---|
+| 1 | Admin | k8sadmin@demo.test | Demo@1234 |
+| 2 | Engineer | k8sengineer@demo.test | Demo@1234 |
+
+> Create these accounts: `./services.sh k8s-seed`
+
+### k8s-specific test cases
+
+| TC | Description | Pre-condition | Steps | Expected | PASS/FAIL |
+|---|---|---|---|---|---|
+| K-01 | Cluster all pods running | `./services.sh k8s-up` done | `kubectl get pods -n ticketing-system` | All 17 pods `1/1 Running` | |
+| K-02 | Ingress routes frontend | `/etc/hosts` has ticketing.local | `curl -s -o /dev/null -w "%{http_code}" http://ticketing.local/` | `200` | |
+| K-03 | Ingress routes API | Token from k8s-seed accounts | `curl http://ticketing.local/api/tickets -H "Authorization: Bearer $TOKEN"` | `200` with JSON | |
+| K-04 | k8s roles seeded | `k8s-seed` run | Register with role ADMIN | Returns JWT with ADMIN role | |
+| K-05 | k8s categories seeded | `k8s-seed` run | Create ticket with category 1 | Ticket created successfully | |
+| K-06 | Kafka fan-out in k8s | Cluster up, both services running | Approve solution → wait 20s | Knowledge article appears at `http://ticketing.local/api/knowledge` | |
+| K-07 | k8s-down removes cluster | Cluster running | `./services.sh k8s-down` | `kubectl get pods -n ticketing-system` returns error | |
+| K-08 | k8s-up is idempotent | Cluster already running | `./services.sh k8s-up` again | Completes without error, no duplicate pods | |

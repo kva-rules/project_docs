@@ -1,6 +1,6 @@
 # Manual Testing Guide
 **Project:** Services — Spring Boot Microservices Platform  
-**Total Assertions:** 162 | **Intentionally Skipped:** 7  
+**Total Assertions:** 171 | **Intentionally Skipped:** 1 (UC-141 — no retry endpoint)  
 **Base URL (Gateway):** `http://localhost:8080`  
 **Tool:** Postman or curl
 
@@ -58,8 +58,10 @@ Store these as Postman collection variables as you progress through the tests.
 | `SOLUTION2_ID` | UC-48 prep | Reject, resubmit |
 | `SOLUTION3_ID` | UC-48 prep | Multi-contributor |
 | `DRAFT_SOL_ID` | UC-82 | DRAFT approval block test |
+| `ATTACHMENT_ID` | UC-69 | Delete attachment (UC-71) |
 | `KB_ARTICLE_ID` | UC-76 / UC-84 | KB read, rate, view |
-| `MANUAL_KB_ID` | UC-85 | Publish, archive, update |
+| `MANUAL_KB_ID` | UC-85 | Publish, archive, update, delete (UC-89) |
+| `TAG_TEST_ARTICLE_ID` | UC-94 | Tag render assertion |
 | `RATING_ID` | UC-97 | Delete rating |
 | `CATEGORY_ID` | UC-102 | Subcategories, update, delete |
 | `TAG_ID` | UC-107 | Delete tag |
@@ -526,7 +528,38 @@ Authorization: Bearer {{TOKEN_MGR1}}
 
 ### UC-18 — Expired token handling
 
-> **SKIPPED** — Requires waiting 1 hour for JWT to expire. Tested via unit/integration tests.
+**Precondition:** Restart auth-service with the test profile (10-second JWT expiry):
+```
+cd auth_service
+mvn -DskipTests spring-boot:run -Dspring-boot.run.profiles=test
+```
+Wait for it to start on :8081, then proceed.
+
+**Step 1 — Login to get a short-lived token:**
+```
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "testuser1@corp.com",
+  "password": "Test@1234"
+}
+```
+**Expected:** HTTP 200 — save `data.accessToken` as `TOKEN_EXPIRED`
+
+**Step 2 — Wait 15 seconds** (token expires after 10s)
+
+**Step 3 — Use the expired token on any protected endpoint:**
+```
+GET http://localhost:8080/api/tickets
+Authorization: Bearer {{TOKEN_EXPIRED}}
+```
+**Expected Code:** 401  
+**Expected Body:** `{"success": false, "message": "...token expired..."}` or similar
+
+**Result:** [ ] PASS  [ ] FAIL  Actual code: ___________
+
+> **After test:** Restart auth-service normally with `--spring.profiles.active=local` to restore the 1-hour expiry.
 
 ---
 
@@ -1648,8 +1681,29 @@ Content-Type: application/json
 
 ### UC-69 — Upload attachment
 
-> **SKIPPED** — Requires multipart binary file upload. Test manually in Postman using form-data with a file field named `file` on:
-> `POST http://localhost:8080/api/solutions/{{SOLUTION1_ID}}/attachments`
+**Precondition:** SOLUTION1_ID exists, testadmin1 logged in (endpoint requires ENGINEER/MANAGER/ADMIN role — no ENGINEER accounts in Phase 0, use ADMIN)  
+**Actor:** testadmin1
+
+> **Note:** This endpoint takes a **JSON body** (not multipart/form-data). Provide a URL reference to the file — no binary upload needed.
+
+**Request:**
+```
+POST http://localhost:8080/api/solutions/{{SOLUTION1_ID}}/attachments
+Authorization: Bearer {{TOKEN_ADMIN1}}
+Content-Type: application/json
+
+{
+  "fileName": "fix-notes.txt",
+  "fileUrl": "https://example.com/attachments/fix-notes.txt",
+  "fileType": "text/plain",
+  "fileSize": 1024
+}
+```
+**Expected Code:** 201  
+**Expected Body:** Contains `attachmentId`, `fileName`, `fileUrl`, `uploadedBy`  
+**Action:** Save `data.attachmentId` → `ATTACHMENT_ID`
+
+**Result:** [ ] PASS  [ ] FAIL  Notes: ___________
 
 ---
 
@@ -1672,7 +1726,18 @@ Authorization: Bearer {{TOKEN_USER1}}
 
 ### UC-71 — Delete attachment
 
-> **SKIPPED** — Requires an attachment ID obtained from UC-69 upload.
+**Precondition:** ATTACHMENT_ID saved from UC-69, testadmin1 logged in (same role requirement as UC-69)  
+**Actor:** testadmin1
+
+**Request:**
+```
+DELETE http://localhost:8080/api/solutions/{{SOLUTION1_ID}}/attachments/{{ATTACHMENT_ID}}
+Authorization: Bearer {{TOKEN_ADMIN1}}
+```
+**Expected Code:** 200  
+**Expected Body:** `{"success": true, "message": "Attachment deleted successfully"}`
+
+**Result:** [ ] PASS  [ ] FAIL  Notes: ___________
 
 ---
 
@@ -2061,7 +2126,7 @@ Content-Type: application/json
 
 ### UC-89 — Delete KB article
 
-> **SKIPPED** — KB articles are intentionally preserved to enable subsequent rating tests (UC-97–101).
+> **Run this after UC-101** (ratings depend on the article existing). See Phase 5 Cleanup section below.
 
 ---
 
@@ -2133,9 +2198,31 @@ Authorization: Bearer {{TOKEN_USER3}}
 
 ---
 
-### UC-94 — Tag render
+### UC-94 — Tag render on KB article
 
-> **SKIPPED** — Tag CRUD is covered in UC-107/108/109.
+**Precondition:** A KB article exists with at least one tag. Create one if needed (requires ADMIN or MANAGER role):
+```
+POST http://localhost:8080/api/knowledge
+Authorization: Bearer {{TOKEN_ADMIN1}}
+Content-Type: application/json
+
+{
+  "title": "Tag Render Test Article",
+  "content": "Verifying tags appear in GET response",
+  "tags": ["networking", "vpn"]
+}
+```
+Save returned `data.articleId` → `TAG_TEST_ARTICLE_ID`
+
+**Request:**
+```
+GET http://localhost:8080/api/knowledge/{{TAG_TEST_ARTICLE_ID}}
+Authorization: Bearer {{TOKEN_ADMIN1}}
+```
+**Expected Code:** 200  
+**Expected Body:** Response contains a `tags` field that is a **non-empty array** (e.g. `["networking","vpn"]` or objects with `id`/`name`). Must NOT be `null` or `[]`.
+
+**Result:** [ ] PASS  [ ] FAIL  Notes: tags value: ___________
 
 ---
 
@@ -2272,6 +2359,25 @@ Authorization: Bearer {{TOKEN_USER2}}
 X-User-Id: {{AUTH_ID_USER2}}
 ```
 **Expected Code:** 200 or 204 (NOT 500)
+
+**Result:** [ ] PASS  [ ] FAIL  Notes: ___________
+
+---
+
+### Phase 5 Cleanup — UC-89 — Delete KB article
+
+> **Run after UC-101.** All rating tests that depend on the article are now complete.
+
+**Precondition:** MANUAL_KB_ID exists (created in UC-85), testadmin3 logged in  
+**Actor:** testadmin3
+
+**Request:**
+```
+DELETE http://localhost:8080/api/knowledge/{{MANUAL_KB_ID}}
+Authorization: Bearer {{TOKEN_ADMIN3}}
+```
+**Expected Code:** 200 or 204  
+**Expected Body:** Success confirmation or empty body
 
 **Result:** [ ] PASS  [ ] FAIL  Notes: ___________
 
@@ -3037,13 +3143,13 @@ Content-Type: application/json
 
 ### UC-141 — Resend failed notification
 
-> **SKIPPED** — Requires a notification that previously failed delivery. No deterministic way to create one in a normal flow.
+> **PERMANENT SKIP** — No `/resend` or `/retry` REST endpoint is exposed by notification-service. Retry logic is handled internally via the `app.notification.retry` configuration (`max-attempts: 3`, `delay-ms: 1000`) applied at the service layer. Creating a deterministic delivery failure requires fault injection (invalid SMTP credentials, network drop) which is outside the scope of functional REST testing. Verified by code review of `NotificationServiceImpl` — not testable through REST in a normal flow.
 
 ---
 
 ### UC-142 — View notification preferences
 
-**Precondition:** testuser4 logged in  
+**Precondition:** testuser4 logged in. Run UC-144 first to ensure preferences exist.  
 **Actor:** testuser4
 
 **Request:**
@@ -3051,8 +3157,8 @@ Content-Type: application/json
 GET http://localhost:8080/api/notification-preferences/{{AUTH_ID_USER4}}
 Authorization: Bearer {{TOKEN_USER4}}
 ```
-**Expected Code:** 200 or 404 (NOT 500)  
-**Expected Body:** Preference settings or 404 if not yet created
+**Expected Code:** 200  
+**Expected Body:** Contains `emailEnabled`, `inAppEnabled`, `ticketUpdates`, `solutionUpdates`, `knowledgeUpdates`, `rewardUpdates` fields
 
 **Result:** [ ] PASS  [ ] FAIL  Notes: ___________
 
@@ -3060,7 +3166,7 @@ Authorization: Bearer {{TOKEN_USER4}}
 
 ### UC-143 — Update notification preferences
 
-**Precondition:** testuser4 logged in  
+**Precondition:** Preferences exist for testuser4 (run UC-144 first), testuser4 logged in  
 **Actor:** testuser4
 
 **Request:**
@@ -3078,15 +3184,16 @@ Content-Type: application/json
   "rewardUpdates": true
 }
 ```
-**Expected Code:** 200 or 404 (NOT 500)
+**Expected Code:** 200  
+**Expected Body:** Updated preference object reflecting the new values
 
 **Result:** [ ] PASS  [ ] FAIL  Notes: ___________
 
 ---
 
-### UC-144 — Reset preferences to defaults
+### UC-144 — Create default preferences
 
-**Precondition:** testuser4 logged in  
+**Precondition:** testuser4 logged in. Run this BEFORE UC-142 and UC-143.  
 **Actor:** testuser4
 
 **Request:**
@@ -3094,7 +3201,8 @@ Content-Type: application/json
 POST http://localhost:8080/api/notification-preferences/{{AUTH_ID_USER4}}
 Authorization: Bearer {{TOKEN_USER4}}
 ```
-**Expected Code:** 200 or 404 (NOT 500)
+**Expected Code:** 201 (created) or 200 (already exists — idempotent)  
+**Expected Body:** Default preferences object with all channels enabled
 
 **Result:** [ ] PASS  [ ] FAIL  Notes: ___________
 
@@ -3699,17 +3807,17 @@ Fill this in after completing all phases:
 | Phase | Tests | PASS | FAIL | SKIP | Notes |
 |-------|-------|------|------|------|-------|
 | Phase 0 — Setup | 12 | | | | Setup steps (no pass/fail checkboxes) |
-| Phase 1 — Auth | 17 | | | 1 | UC-18 skipped |
+| Phase 1 — Auth | 18 | | | 0 | UC-18 now testable via test profile |
 | Phase 2 — Profiles | 5 | | | | |
 | Phase 3 — Tickets | 24 | | | | |
-| Phase 4 — Solutions | 34 | | | 2 | UC-69, UC-71 skipped |
-| Phase 5 — Knowledge Base | 24 | | | 2 | UC-89, UC-94 skipped |
+| Phase 4 — Solutions | 36 | | | 0 | UC-69 (JSON body), UC-71 (delete) restored |
+| Phase 5 — Knowledge Base | 27 | | | 0 | UC-89 moved to cleanup, UC-94 restored, UC-89 cleanup added |
 | Phase 6 — Rewards | 17 | | | | |
-| Phase 7 — Notifications | 21 | | | 2 | UC-141 + preferences skipped |
+| Phase 7 — Notifications | 24 | | | 1 | UC-141 permanent skip (no retry endpoint); UC-142/143/144 restored |
 | Phase 8 — Infrastructure | 6 | | | | |
 | Phase 9 — E2E Flows | 5 | | | | |
 | Phase 10 — Security | 9 | | | | |
-| **TOTAL** | **162** | | | **7** | |
+| **TOTAL** | **171** | | | **1** | Only UC-141 permanently skipped |
 
 ---
 
@@ -3747,3 +3855,73 @@ X-User-Role: ROLE_USER   (or ROLE_MANAGER or ROLE_ADMIN)
 - Rejection body uses `reason` (not `rejectionReason`)
 - Ticket assignment body uses `assignedTo` (not `assignedUserId`)
 - Add contributor body requires both `solutionId` AND `userId` fields
+
+---
+
+## Appendix K — Kubernetes Mode Testing
+
+All 162 test assertions in this guide apply equally to k8s mode. The only differences are:
+
+### Base URL
+Replace `http://localhost:8080` with `http://ticketing.local` in every curl command.
+
+### Credentials
+Use k8s-specific accounts (created by `./services.sh k8s-seed`):
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | k8sadmin@demo.test | Demo@1234 |
+| Engineer | k8sengineer@demo.test | Demo@1234 |
+
+### Pre-test checklist
+```bash
+# 1. Confirm cluster is up and all pods running
+./services.sh k8s-status
+
+# 2. Confirm /etc/hosts has the ticketing.local entry
+grep "ticketing.local" /etc/hosts
+
+# 3. Confirm seed data exists
+curl -s http://ticketing.local/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"k8sadmin@demo.test","password":"Demo@1234"}' | python3 -m json.tool
+
+# 4. Get a token for testing
+TOKEN=$(curl -s -H "Content-Type: application/json" \
+  -X POST http://ticketing.local/api/auth/login \
+  -d '{"email":"k8sadmin@demo.test","password":"Demo@1234"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['accessToken'])")
+echo $TOKEN
+```
+
+### Phase 0 equivalent — infrastructure check
+```bash
+# All 17 pods should show 1/1 READY
+kubectl get pods -n ticketing-system
+
+# Ingress rule should show ticketing.local
+kubectl get ingress -n ticketing-system
+
+# Frontend should return HTTP 200
+curl -s -o /dev/null -w "%{http_code}" http://ticketing.local/
+```
+
+### Phase 1–10 — identical steps, different base URL
+Replace `localhost:8080` → `ticketing.local` in every request. All expected responses, status codes, and Kafka event timings are identical to local mode.
+
+### Observability during k8s testing
+```bash
+# Tail logs for the service under test
+./services.sh k8s-logs ticket-service
+./services.sh k8s-logs solution-service
+./services.sh k8s-logs reward-service
+./services.sh k8s-logs notification-service
+
+# Check Kafka topics inside the k8s cluster
+kubectl exec -n ticketing-system deploy/kafka -- /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --list
+
+# Check consumer group lag
+kubectl exec -n ticketing-system deploy/kafka -- /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --list
+```

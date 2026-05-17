@@ -401,21 +401,30 @@ DATABASES=(auth_db user_db ticket_db solution_db knowledge_db reward_db notifica
 
 ---
 
-## 10. Running the Stack — Kubernetes Mode (`k8s/k8s.sh`)
+## 10. Running the Stack — Kubernetes Mode
 
 All services run as pods inside a local `kind` cluster (k8s-in-docker), exposed through nginx-ingress on `http://ticketing.local/`.
 
-### Every command
+### Commands — via `services.sh` (recommended)
 
 ```bash
-./k8s/k8s.sh up       # create kind cluster, build + load images,
-                      # deploy manifests, seed roles
+./services.sh k8s-up      # create kind cluster, build + load images, deploy, seed roles
+./services.sh k8s-down    # delete the kind cluster (all k8s data lost)
+./services.sh k8s-status  # show pods + ingress + health
+./services.sh k8s-seed    # seed roles, categories, and k8s demo accounts
+./services.sh k8s-logs <deployment>   # tail logs (e.g. k8s-logs auth-service)
+```
+
+### Commands — via `k8s/k8s.sh` (direct)
+
+```bash
+./k8s/k8s.sh up       # same as k8s-up above
 ./k8s/k8s.sh status   # show pods + ingress
-./k8s/k8s.sh test     # end-to-end smoke test (register/login/protected)
+./k8s/k8s.sh test     # end-to-end smoke test (register/login/protected endpoints)
 ./k8s/k8s.sh down     # delete the kind cluster
 ```
 
-### What `./k8s/k8s.sh up` does
+### What `k8s-up` / `./k8s/k8s.sh up` does
 
 1. Creates kind cluster `ticketing` from `k8s/kind-cluster.yaml` (maps host ports 80+443 → cluster ingress) if not already present.
 2. Builds all 9 Docker images locally:
@@ -429,31 +438,54 @@ All services run as pods inside a local `kind` cluster (k8s-in-docker), exposed 
 4. Installs the kind-variant nginx-ingress and waits for it ready.
 5. Runs `k8s/apply.sh`, which applies in order: namespace → postgres → kafka → services → frontend → ingress.
 6. Waits for every pod to report `Ready`.
-7. Seeds `auth_db.roles` with USER/ADMIN/ENGINEER/MANAGER.
+7. Seeds `auth_db.roles` with USER/ADMIN/ENGINEER/MANAGER (correct schema: `role_id UUID`, `role_name VARCHAR`).
 
 ### One-time manual step for the hostname
 
-Add to `/etc/hosts` (needs sudo):
+Add to `/etc/hosts` (needs sudo — use your macOS login password):
 ```bash
-sudo sh -c 'echo "127.0.0.1 ticketing.local" >> /etc/hosts'
+echo "127.0.0.1 ticketing.local" | sudo tee -a /etc/hosts
 ```
 
 Then open **http://ticketing.local/**.
 
+### Seed demo data (required after every `k8s-up`)
+
+The k8s databases start empty. Run after the cluster is up:
+```bash
+./services.sh k8s-seed
+```
+
+This seeds:
+- **Roles** in `auth_db` — USER / ADMIN / ENGINEER / MANAGER (using `role_id` UUID column)
+- **Categories** in `ticket_db` — 5 rows (Network, Software, Hardware, Security, Other)
+- **Demo accounts** registered via ingress:
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | k8sadmin@demo.test | Demo@1234 |
+| Engineer | k8sengineer@demo.test | Demo@1234 |
+
+> **Note:** These are k8s-specific accounts. Local credentials (`adm1778576329@demo.test`) only exist in the local Postgres instance.
+
 ### K8s internal DNS
-Inside the cluster, services reach each other by service name:
+Inside the cluster, services reach each other by service name within the `ticketing-system` namespace:
 - `auth-service:8081`, `user-service:8082`, …, `notification-service:8087`
 - `postgres-auth:5432`, `postgres-user:5432`, …
 - `kafka:9092`
 
-Tuned in the api-gateway's `application-local.yaml` through env-var placeholders that default to localhost:
+Configured in `api-gateway` via env-var placeholders in `application-local.yaml`:
 ```yaml
 uri: ${AUTH_SERVICE_URI:http://localhost:8081}
 ```
-`k8s/services.yaml` sets `AUTH_SERVICE_URI=http://auth-service:8081` in the gateway pod.
+`k8s/services.yaml` sets `AUTH_SERVICE_URI=http://auth-service:8081` etc. on every pod that needs cross-service calls.
+
+### K8s Kafka (KRaft mode — no Zookeeper)
+The k8s cluster uses `apache/kafka:3.9.2` in KRaft mode (single-node, no Zookeeper required).
+This is intentionally different from local mode which uses `confluentinc/cp-kafka:7.5.0` + Zookeeper.
 
 ### ⚠️ Port conflict
-**Never run `services.sh start` and `k8s/k8s.sh up` at the same time** — both claim port 9092 (Kafka). Use one or the other.
+**Never run `services.sh start` and `k8s-up` at the same time** — both bind to port 9092 (Kafka). Use one mode at a time.
 
 ---
 
@@ -977,17 +1009,18 @@ The controller method is missing `@SecurityRequirement(name = "bearerAuth")`, or
 ### Kubernetes mode
 ```bash
 # first time
-./k8s/k8s.sh up
-sudo sh -c 'echo "127.0.0.1 ticketing.local" >> /etc/hosts'
+./services.sh k8s-up
+echo "127.0.0.1 ticketing.local" | sudo tee -a /etc/hosts   # one-time
+./services.sh k8s-seed     # seed roles + categories + demo accounts
 
 # inspect
-./k8s/k8s.sh status
-./k8s/k8s.sh test
+./services.sh k8s-status
+./k8s/k8s.sh test          # smoke test via ingress
 kubectl get pods -n ticketing-system
-kubectl logs -f deployment/auth-service -n ticketing-system
+./services.sh k8s-logs auth-service    # or: kubectl logs -f deployment/auth-service -n ticketing-system
 
 # tear down
-./k8s/k8s.sh down
+./services.sh k8s-down
 ```
 
 ### Direct backend test (bypass gateway)

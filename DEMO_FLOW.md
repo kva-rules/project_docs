@@ -283,3 +283,114 @@ If multiple things break: **switch to running `./scripts/e2e_test.sh` and narrat
 - Don't `./services.sh stop` mid-demo — it takes 30s to come back up.
 - Don't run `mvn clean` anywhere — you'll lose the cached JARs.
 - Don't open a database admin UI live — too easy to fat-finger a DELETE.
+
+---
+
+## 8. Kubernetes Demo Mode (Alternative to Local)
+
+Use this section if the demo is running on the Kubernetes (kind) cluster instead of local JARs.
+Everything in sections 1–7 applies identically; only the **access URL and credentials change**.
+
+### 8.0 — Pre-flight (30 min before panel)
+
+```bash
+# Check cluster is up
+./services.sh k8s-status
+
+# If not up yet:
+./services.sh k8s-up          # ~5–8 min first time, ~2 min thereafter
+
+# Seed demo data (required on a fresh cluster)
+./services.sh k8s-seed
+
+# One-time /etc/hosts entry (if not already done)
+grep -q "ticketing.local" /etc/hosts || echo "Run: echo '127.0.0.1 ticketing.local' | sudo tee -a /etc/hosts"
+
+# Smoke test
+./k8s/k8s.sh test             # prints register / login / protected endpoint HTTP codes
+```
+
+Open these tabs:
+- **http://ticketing.local/** — React frontend (via Nginx ingress)
+- **http://ticketing.local/api/tickets** — raw API check (expect 401 unauthenticated)
+
+---
+
+### 8.1 — k8s credentials (memorise)
+
+| Nick | Email | Role | Demo purpose |
+|------|-------|------|--------------|
+| k8sadmin | k8sadmin@demo.test | ADMIN | Approves solutions, awards points, manages tickets |
+| k8sengineer | k8sengineer@demo.test | ENGINEER | Submits solutions, earns points |
+
+**Password for both:** `Demo@1234`
+
+---
+
+### 8.2 — URL differences vs local
+
+| | Local | Kubernetes |
+|---|---|---|
+| Frontend | http://localhost:3000 | http://ticketing.local |
+| API entry | http://localhost:8080/api | http://ticketing.local/api |
+| Aggregated Swagger UI | http://localhost:8080/swagger-ui.html | http://ticketing.local/swagger-ui.html |
+| OpenAPI JSON | http://localhost:8080/v3/api-docs | http://ticketing.local/v3/api-docs |
+| Per-service OpenAPI JSON | http://localhost:808X/v3/api-docs | http://ticketing.local/v3/api-docs/\<service\> |
+| Individual service Swagger | http://localhost:808X/swagger-ui.html | Not exposed (pods are internal) |
+
+> The ingress routes `/swagger-ui`, `/v3/api-docs`, and `/webjars` to the gateway before the frontend catch-all rule — so the aggregated Swagger UI works directly at `http://ticketing.local/swagger-ui.html`.
+
+---
+
+### 8.3 — Live demo steps (k8s version)
+
+Follow the same steps as **Section 2** but:
+- Replace all `http://localhost:3000` → `http://ticketing.local`
+- Use `k8sadmin@demo.test` (instead of `admin1@demo.local`)
+- Use `k8sengineer@demo.test` as the second user
+
+Token retrieval for terminal demos:
+```bash
+TOKEN=$(curl -s -H "Host: ticketing.local" -H "Content-Type: application/json" \
+  -X POST http://ticketing.local/api/auth/login \
+  -d '{"email":"k8sadmin@demo.test","password":"Demo@1234"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['accessToken'])")
+echo $TOKEN
+```
+
+---
+
+### 8.4 — Show the k8s platform itself
+
+```bash
+# All 17 pods running (7 postgres + kafka + 8 services + frontend)
+kubectl get pods -n ticketing-system
+
+# Ingress routing rules
+kubectl get ingress -n ticketing-system -o yaml | grep -A5 "rules:"
+
+# Individual service pod details
+kubectl describe pod -n ticketing-system -l app=auth-service | grep -E "Image:|Ready:|Restart"
+
+# Live logs during demo (run in a split pane)
+./services.sh k8s-logs solution-service
+```
+
+**Key talking points:**
+- "17 pods running — 7 PostgreSQL StatefulSets (one per service), Apache Kafka in KRaft mode, 8 Spring Boot services and the React frontend."
+- "The Nginx ingress is the single entry point. `/api/*` routes to the gateway pod; `/*` routes to the frontend pod."
+- "All images are built locally and loaded into the kind cluster — `imagePullPolicy: Never`. This mirrors how a private registry would work in production."
+- "Pod-to-pod communication uses Kubernetes DNS: `auth-service:8081`, `kafka:9092` — no hardcoded IPs anywhere."
+
+---
+
+### 8.5 — Backup plan (k8s-specific)
+
+| Symptom | Quick recovery |
+|---------|---------------|
+| Pod `CrashLoopBackOff` | `./services.sh k8s-logs <svc>` to see error; restart pod: `kubectl rollout restart deployment/<svc> -n ticketing-system` |
+| Frontend 404 / ingress not routing | `kubectl get ingress -n ticketing-system` — check host is `ticketing.local`; check `/etc/hosts` |
+| Login 401 after seed | Roles not seeded — run `./services.sh k8s-seed` again |
+| Ticket create fails | Categories not seeded — run `./services.sh k8s-seed` again |
+| KB article missing after approve | Wait 15–20s for Kafka fan-out; check `./services.sh k8s-logs knowledge-service` |
+| Cluster completely broken | `./services.sh k8s-down && ./services.sh k8s-up && ./services.sh k8s-seed` (~5 min) |

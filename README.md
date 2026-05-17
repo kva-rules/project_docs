@@ -284,24 +284,44 @@ notifications, the full Kafka `solution.approved → KB article` chain, and mult
 
 ## Quick start (Kubernetes)
 
+Requires: `kind` + `kubectl` + Docker. Uses a local [Kind](https://kind.sigs.k8s.io/) cluster named `ticketing`.
+
 ```bash
-# Builds all images, applies manifests, waits for pods to be Ready
-./k8s/k8s.sh up
+# 1. Bring up the cluster (builds images, applies manifests, seeds roles)
+./services.sh k8s-up          # or: ./k8s/k8s.sh up
 
-# Status
-kubectl get pods -n ticketing-system
-
-# Access via ingress
+# 2. Add /etc/hosts entry (one-time, needs your macOS login password)
 echo "127.0.0.1 ticketing.local" | sudo tee -a /etc/hosts
+
+# 3. Seed demo data (roles + categories + k8s accounts)
+./services.sh k8s-seed
+
+# 4. Check status
+./services.sh k8s-status      # or: kubectl get pods -n ticketing-system
+
+# 5. Open the app
 open http://ticketing.local
 ```
 
+**k8s demo credentials** (separate from local accounts):
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | k8sadmin@demo.test | Demo@1234 |
+| Engineer | k8sengineer@demo.test | Demo@1234 |
+
 Manifests live in `k8s/` — one YAML per service + `postgres.yaml`, `kafka.yaml`, `ingress.yaml`, `namespace.yaml`.
 
-Tear down:
 ```bash
-./k8s/k8s.sh down
+# View logs for a k8s service
+./services.sh k8s-logs auth-service
+./services.sh k8s-logs ticket-service
+
+# Tear down (deletes the kind cluster — all k8s data lost)
+./services.sh k8s-down        # or: ./k8s/k8s.sh down
 ```
+
+> **Note:** k8s mode and local mode are fully independent. `k8s-up`/`k8s-down` do not touch local JARs, Postgres, or Kafka.
 
 ---
 
