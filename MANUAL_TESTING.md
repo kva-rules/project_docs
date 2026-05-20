@@ -202,6 +202,8 @@ Content-Type: application/json
 
 ---
 
+test_user1
+
 ### UC-01 — Register new USER
 
 **Precondition:** None  
